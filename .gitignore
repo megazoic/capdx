@@ -1,0 +1,13 @@
+*.txt
+data_files
+*.pstore
+.rspec
+.rvmrc
+test*
+.DS_Store
+spec*
+process*
+out_data
+log
+model
+*rejected

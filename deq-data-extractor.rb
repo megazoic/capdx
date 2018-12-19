@@ -51,12 +51,12 @@ class DataExtractor
         file_count = 0
         file_name = ""
         files_to_check.each do |file|
-          #if file_count == 245
-          #    break
-          #elsif file_count < 240
-          #    file_count = file_count + 1
-          #    next
-          #end
+          if file_count == 11
+              break
+          elsif file_count < 3
+              file_count = file_count + 1
+              next
+          end
           fn = /\/([^\/]+)\.xlsx/.match(file)
           if fn.nil?
               @@logger.error "could not match filename"
@@ -78,7 +78,8 @@ class DataExtractor
           #test for data present in file, MUST BUILD EMI FIRST
          ["EMI", "MAT"].each do |sheet_key|
             #check if there is data in this sheet, if so, get data row and cas cell anchors
-            success = findCasDataAnchor(roo_file, sheet_key, file_name)
+            #success = findCasDataAnchor(roo_file, sheet_key, file_name)
+            success = 0
             if success == 1
               #next step is to build the array of rows that contain data
               setDataRowArray(roo_file, sheet_key)
@@ -103,7 +104,7 @@ class DataExtractor
                 puts "setDescriptorsAndData no joy!"
               end
               reset("btwn_sheets")
-            end
+            end#close if success == 1
           end
           reset("eof")
           file_count = file_count + 1
@@ -260,9 +261,20 @@ class DataExtractor
               while true
                   source_check = roo_file.sheet(SHEET["CO"]).cell(start_row + source_row_inc,1)
                   if /Source/.match(source_check)
-                      #company source code should be cell to the right of this
-                      @@co_source_no = roo_file.sheet(SHEET["CO"]).cell(start_row + source_row_inc,2)
-                      break
+                    #company source code should be cell to the right of this except one file has format dd/dd/dddd
+                    co_source_no = roo_file.sheet(SHEET["CO"]).cell(start_row + source_row_inc,2)
+                    if co_source_no.is_a?(Date)
+                      co_source_no = co_source_no.strftime("%m/%d/%Y")
+                    end
+                    m = /(\d+)[-\/](\d+)\/*(\d*)/.match(co_source_no)
+                    puts "#{file_name} has m length #{m.length}\nm[0] is #{m[0]}\tm[1] is #{m[1]}\tm[2] is #{m[2]}\tm[3] is #{m[3]}\t"
+                    if m[3] == "" #file should be 02-2125 but entered wrong in sheet (02/01/2125)
+                      @@co_source_no = co_source_no
+                    else
+                      @@co_source_no = "#{m[1]}-#{m[3]}"
+                      @@logger.info "#{file_name}: co_source_no had date format converted to: #{@@co_source_no}"
+                    end
+                    break
                   else
                       #going to look from rows 17 to 20 for the word Source
                       if source_row_inc > 8
@@ -270,6 +282,7 @@ class DataExtractor
                           @@logger.error "no co_source_no could be found! Using begining of file name"
                           m = /([\d-]+)/.match(file_name)
                           if m[1].nil?
+                            #one file has format dd/dd/dddd
                             @@co_source_no = file_name[0,10]
                           else
                             @@co_source_no = m[1]
@@ -279,15 +292,15 @@ class DataExtractor
                       source_row_inc = source_row_inc + 1
                   end
               end
-              @@co_details_store.transaction do
-                  if @@co_details_store.root?(@@co_source_no)
-                      #we already have this data
-                      @@logger.info "this company #{@@co_source_no} has already been entered"
-                  else
-                      @@logger.info "adding #{@@co_source_no} to the store for file #{file_name}"
-                      @@co_details_store[@@co_source_no] = facility_array
-                  end
-              end
+              #@@co_details_store.transaction do
+              #    if @@co_details_store.root?(@@co_source_no)
+              #        #we already have this data
+              #        @@logger.info "this company #{@@co_source_no} has already been entered"
+              #    else
+              #        @@logger.info "adding #{@@co_source_no} to the store for file #{file_name}"
+              #        @@co_details_store[@@co_source_no] = facility_array
+              #    end
+              #end
               @@logger.info "adding facility info for #{file_name}"
             else
                 @@logger.error "there was an error finding facility info for #{file_name}"

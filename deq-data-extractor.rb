@@ -20,6 +20,7 @@ class DataExtractor
     @@emission_desc_store = PStore.new("./db_files/emission_desc.pstore")
     @@material_agg_data_store = PStore.new("./db_files/material_agg_data.pstore")
     @@emission_agg_data_store = PStore.new("./db_files/emission_agg_data.pstore")
+    #holds unique set of units
     @@desc_agg_units_store = PStore.new("./db_files/desc_agg_units.pstore")
     
     #lookup table for unique_row_ID => row_no, sheet, co_source_no, file_name
@@ -38,7 +39,7 @@ class DataExtractor
     @@co_source_no = ''
     @@current_row_ID = '' #is unique but this variable is reset every row
     @@unique_row_ID_array = []
-    @@data_cas_anchor = [] #holds upper left corner of congituous range of data cells [data_anchor]
+    @@data_cas_anchor = [] #holds upper left corner of congituous range of data cells row number
     #and the cas_row and cas_col anchors so, [data_anchor, cas_row_anchor, cas_col_anchor]
     #start with cas anchor row at 15
     @@data_cas_anchor[1] = 15
@@ -81,20 +82,22 @@ class DataExtractor
           #test for data present in file, MUST BUILD EMI FIRST
          ["EMI", "MAT"].each do |sheet_key|
             #check if there is data in this sheet, if so, get data row and cas cell anchors
-            #success = findCasDataAnchor(roo_file, sheet_key, file_name)
-            findCasDataAnchor(roo_file, sheet_key, file_name)
-            success = 0
+            success = findCasDataAnchor(roo_file, sheet_key, file_name)
             if success == 1
               #next step is to build the array of rows that contain data
               setDataRowArray(roo_file, sheet_key)
               #add that we have data for this sheet to @@co_details_store
               @@co_details_store.transaction do
-                @@co_details_store[@@co_source_no] << "#{sheet_key}_data-present_#{@@data_present[sheet_key]}"
+                cf = @@cas_formula
+                if cf == ''
+                  cf = 'NA'
+                end
+                @@co_details_store[@@co_source_no][sheet_key] = [@@data_present[sheet_key],cf]
               end
               
               if !@@data_present[sheet_key]
                 #none, try next sheet
-                @@logger.error "#{@@co_source_no}: not able to find any data in #{sheet_key}_rows"
+                @@logger.info "#{@@co_source_no}: not able to find any data in #{sheet_key}_rows"
                 next
               end
               #_____________________________setDataColDescriptors__________________________
@@ -295,15 +298,15 @@ class DataExtractor
                       source_row_inc = source_row_inc + 1
                   end
               end
-              #@@co_details_store.transaction do
-              #    if @@co_details_store.root?(@@co_source_no)
-              #        #we already have this data
-              #        @@logger.info "this company #{@@co_source_no} has already been entered"
-              #    else
-              #        @@logger.info "adding #{@@co_source_no} to the store for file #{file_name}"
-              #        @@co_details_store[@@co_source_no] = facility_array
-              #    end
-              #end
+              @@co_details_store.transaction do
+                  if @@co_details_store.root?(@@co_source_no)
+                      #we already have this data
+                      @@logger.info "this company #{@@co_source_no} has already been entered"
+                  else
+                      @@logger.info "adding #{@@co_source_no} to the store for file #{file_name}"
+                      @@co_details_store[@@co_source_no] = Hash["addr",facility_array]
+                  end
+              end
               @@logger.info "adding facility info for #{file_name}"
             else
                 @@logger.error "there was an error finding facility info for #{file_name}"
@@ -329,7 +332,6 @@ class DataExtractor
         (0..noCols).each do |col_count|
           #skip desc and agg data columns
           if col_count < (@@data_cas_anchor[2] + 1)
-            col_count = col_count + 1
             next
           end
           #cas_code array holds code and desc, third cell used to differentiate between
@@ -340,41 +342,40 @@ class DataExtractor
             cas_code_array[1] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 1, col_count)
             cas_code_array[2] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count)
             case self.validate(cas_code_array)
-              when "orphan"
-                #represents a correct col without a cas but does have a chem description
-                found_CAS = false
-                #check for any data at this chem type
-                chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
-                if chem_by_type_data_array != 0
-                  setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
-                end
-                skip_inc_subcount = false
-              when "cas"
-                found_CAS = true
-                #check for any data at this chem type
-                chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
-                if chem_by_type_data_array != 0
-                  setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
-                end
-                skip_inc_subcount = false
-              else
-                #must be a chemical group desc move to next col and look again
-                skip_inc_subcount = true
+            when "orphan"
+              #represents a correct col without a cas but does have a chem description
+              found_CAS = false
+              #check for any data at this chem type
+              chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
+              if chem_by_type_data_array != 0
+                setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
               end
-            end
-            if skip_inc_subcount == false
-              #need to reset max_col_adjust because back on track
-              max_col_adjust = 0
-              subcount = subcount + 1
+              skip_inc_subcount = false
+            when "cas"
+              found_CAS = true
+              #check for any data at this chem type
+              chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
+              if chem_by_type_data_array != 0
+                setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
+              end
+              skip_inc_subcount = false
             else
-              #must skip a col somethings up but only allow 3 more adj cols
-              if max_col_adjust > 3
-                return 0
-              else
-                max_col_adjust = max_col_adjust + 1
-              end
+              #must be a chemical group desc move to next col and look again
+              skip_inc_subcount = true
             end
-            col_count = col_count + 1
+          end
+          if skip_inc_subcount == false
+            #need to reset max_col_adjust because back on track
+            max_col_adjust = 0
+            subcount = subcount + 1
+          else
+            #must skip a col somethings up but only allow 3 more adj cols
+            if max_col_adjust > 3
+              return 0
+            else
+              max_col_adjust = max_col_adjust + 1
+            end
+          end
         end#closes (0..noCols) do |col_count|
      end
 
@@ -523,9 +524,13 @@ class DataExtractor
       when "btwn_sheets"
         @@data_cas_anchor = []
         @@data_cas_anchor[1] = 15
+        @@cas_formula = ''
+        @@cas_pattern = 3
       when "eof"
         @@data_cas_anchor = []
         @@data_cas_anchor[1] = 15
+        @@cas_formula = ''
+        @@cas_pattern = 3
         @@data_present = Hash["EMI", false, "EMI_rows", [[],0], "MAT", false, "MAT_rows", [[],0], "EMI_unit_key", '', "MAT_unit_key", '']
       else
       end
@@ -557,7 +562,7 @@ class DataExtractor
             else #cell must have data
               emi_anchor_row = row + 1
             end
-            @@data_cas_anchor[0] = [emi_anchor_row]
+            @@data_cas_anchor[0] = emi_anchor_row
             data_found = true
             break
           end
@@ -573,7 +578,7 @@ class DataExtractor
           m = /Prod/.match(cell)
           if m
             #data row is two rows below this cell
-            @@data_cas_anchor[0] = [(row + 2)]
+            @@data_cas_anchor[0] = (row + 2)
             data_found = true
             break
           end
@@ -619,12 +624,12 @@ class DataExtractor
         return 1
       end
     end
-    def self.setColPatternCasFormula(roo_file, sheet_key, file_name, row, start_col)
-      #Test adj cells (same row, cols to right) to see if there is a 3 col or 1 col pattern
+    def self.setColPatternCasFormula(roo_file, sheet_key, file_name, row, col)
+      #Test adj cells (same row, cols to right) for 3 col or 1 col pattern (expect cas number adjacent to right)
       cas_reg = /^[\d-]+$/
       cells_with_cas = []
       (1..2).each do |col_addr|
-        cells_with_cas << roo_file.sheet(SHEET[sheet_key]).cell(row, (start_col + col_addr)).to_s
+        cells_with_cas << roo_file.sheet(SHEET[sheet_key]).cell(row, (col + col_addr)).to_s
       end
       m1 = cas_reg.match(cells_with_cas[0])
       m2 = cas_reg.match(cells_with_cas[1])
@@ -634,11 +639,50 @@ class DataExtractor
       end
       if m2.nil?
         @@cas_pattern = 3 #this is a 3 col pattern (default)
+        #need to look up formula, step through rows on 'CAS' col looking for 'Emis' then 'Pollu'
+        form_reg = /(Emis|Pollu)/i
+        cells_with_cas = []
+        (1..2).each do |row_addr|
+          cells_with_cas << roo_file.sheet(SHEET[sheet_key]).cell((row + row_addr), col).to_s
+        end
+        m1 = form_reg.match(cells_with_cas[0])
+        m2 = form_reg.match(cells_with_cas[1])
+        if !m1.nil? && !m2.nil?
+          #look 3 rows below CAS string
+          formula = roo_file.sheet(SHEET[sheet_key]).cell((row + 3), col).to_s.strip
+          if formula != ''
+            @@cas_formula = formula
+          else
+            #try one more row
+            formula = roo_file.sheet(SHEET[sheet_key]).cell((row + 4), col).to_s.strip
+            if formula != ''
+              @@cas_formula = formula
+            else
+              @@logger.error "#{@@co_source_no}:#{sheet_key} has no formula"
+            end
+          end
+        else
+          if m2.nil?
+            formula = roo_file.sheet(SHEET[sheet_key]).cell((row + 2), col).to_s.strip
+            if formula != ''
+              @@cas_formula = formula
+            else
+              #try one more row
+              formula = roo_file.sheet(SHEET[sheet_key]).cell((row + 3), col).to_s.strip
+              if formula != ''
+                @@cas_formula = formula
+              else
+                @@logger.error "#{@@co_source_no}:#{sheet_key} has no formula"
+              end
+            end
+          else
+            @@logger.error "#{@@co_source_no}:#{sheet_key} m1 was nil"
+          end
+        end
       else
         @@cas_pattern = 1
         @@logger.info "#{file_name}:#{sheet_key} cas pattern is single column"
       end
-      #need to look up formula
     end
     def self.setDataRowArray(roo_file, sheet_key)
       @@data_present[sheet_key] = false

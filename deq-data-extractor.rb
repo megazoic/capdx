@@ -32,6 +32,9 @@ class DataExtractor
     WORKINGXLDIR = './data_files/'
     SHEET = Hash["MAT",'3. Material Balance',"EMI",'2. Emission Units & Activities',"CO",'1. Facility Information']
     
+    @@cas_pattern = 3 #default col pattern for picking up chem specific data
+    @@cas_formula = '' #holds formula used to calculate cas data and this formula is held in desc_agg_units_store
+    
     @@co_source_no = ''
     @@current_row_ID = '' #is unique but this variable is reset every row
     @@unique_row_ID_array = []
@@ -51,9 +54,9 @@ class DataExtractor
         file_count = 0
         file_name = ""
         files_to_check.each do |file|
-          if file_count == 11
+          if file_count == 50
               break
-          elsif file_count < 3
+          elsif file_count < 39
               file_count = file_count + 1
               next
           end
@@ -79,11 +82,12 @@ class DataExtractor
          ["EMI", "MAT"].each do |sheet_key|
             #check if there is data in this sheet, if so, get data row and cas cell anchors
             #success = findCasDataAnchor(roo_file, sheet_key, file_name)
+            findCasDataAnchor(roo_file, sheet_key, file_name)
             success = 0
             if success == 1
               #next step is to build the array of rows that contain data
               setDataRowArray(roo_file, sheet_key)
-              #add this info to @@co_details_store
+              #add that we have data for this sheet to @@co_details_store
               @@co_details_store.transaction do
                 @@co_details_store[@@co_source_no] << "#{sheet_key}_data-present_#{@@data_present[sheet_key]}"
               end
@@ -267,7 +271,6 @@ class DataExtractor
                       co_source_no = co_source_no.strftime("%m/%d/%Y")
                     end
                     m = /(\d+)[-\/](\d+)\/*(\d*)/.match(co_source_no)
-                    puts "#{file_name} has m length #{m.length}\nm[0] is #{m[0]}\tm[1] is #{m[1]}\tm[2] is #{m[2]}\tm[3] is #{m[3]}\t"
                     if m[3] == "" #file should be 02-2125 but entered wrong in sheet (02/01/2125)
                       @@co_source_no = co_source_no
                     else
@@ -324,7 +327,8 @@ class DataExtractor
         max_col_adjust = 0
         #check pattern of cas-codes, expect one every 3 cols
         (0..noCols).each do |col_count|
-          if col_count < 13
+          #skip desc and agg data columns
+          if col_count < (@@data_cas_anchor[2] + 1)
             col_count = col_count + 1
             next
           end
@@ -332,7 +336,7 @@ class DataExtractor
           #group description col and chem with missing cas code (only a common name)
           cas_code_array = []
           if subcount%3 == 0
-            cas_code_array[0] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count)
+            cas_code_array[0] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count).strip
             cas_code_array[1] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 1, col_count)
             cas_code_array[2] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count)
             case self.validate(cas_code_array)
@@ -587,30 +591,54 @@ class DataExtractor
       start_col = sheet_key == "EMI" ? 12 : 14
       cell = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], start_col).to_s
       if /CAS/.match(cell)
-        #put this row col into @@data_cas_anchor which already contains data_anchor (row) and 
-        #cas row
+        #put this row col into @@data_cas_anchor (already contains data_anchor (row) and cas row)
         @@data_cas_anchor[2] = start_col
+        #set the col pattern and cas formula
+        setColPatternCasFormula(roo_file, sheet_key, file_name, @@data_cas_anchor[1], start_col)
         #got something from this sheet move on
         return 1
       else
         #need to try a spiral search pattern
+        missing_cas_string = []
         spiralSearch(7,5) { |col_shift,row_shift|
           col = start_col + col_shift
           row = @@data_cas_anchor[1] + row_shift
-          cell = roo_file.sheet(SHEET[sheet_key]).cell(row, col).to_s
+          cell = roo_file.sheet(SHEET[sheet_key]).cell(row, col).to_s.strip
           if /CAS/.match(cell)
             #set both row (even though it already exists here) and col
             @@data_cas_anchor[1,2] = row, col
             @@logger.info "#{@@co_source_no}:#{sheet_key} has data_row: #{@@data_cas_anchor[0]}, cas_row: #{@@data_cas_anchor[1]}, cas_col: #{@@data_cas_anchor[2]}"
+            #set the col pattern and cas formula
+            setColPatternCasFormula(roo_file, sheet_key, file_name, row, col)
             #got something from this sheet move on
             return 1
           end
         }
         #if we're here, we couldn't find a cas anchor cell but we did find a data anchor, ok to continue
-        @@logger.info "#{@@co_source_no}:#{sheet_key} couldn't find a cas row"
-        #look for empty cells in columns further right
+        @@logger.info "#{@@co_source_no}:#{sheet_key} couldn't find a cas row but data row: #{@@data_cas_anchor[0]}"
         return 1
       end
+    end
+    def self.setColPatternCasFormula(roo_file, sheet_key, file_name, row, start_col)
+      #Test adj cells (same row, cols to right) to see if there is a 3 col or 1 col pattern
+      cas_reg = /^[\d-]+$/
+      cells_with_cas = []
+      (1..2).each do |col_addr|
+        cells_with_cas << roo_file.sheet(SHEET[sheet_key]).cell(row, (start_col + col_addr)).to_s
+      end
+      m1 = cas_reg.match(cells_with_cas[0])
+      m2 = cas_reg.match(cells_with_cas[1])
+      if m1.nil?
+        #expected this to be true raise error
+        @@logger.error "#{file_name}:#{sheet_key} cannot find cas number adj to CAS anchor"
+      end
+      if m2.nil?
+        @@cas_pattern = 3 #this is a 3 col pattern (default)
+      else
+        @@cas_pattern = 1
+        @@logger.info "#{file_name}:#{sheet_key} cas pattern is single column"
+      end
+      #need to look up formula
     end
     def self.setDataRowArray(roo_file, sheet_key)
       @@data_present[sheet_key] = false

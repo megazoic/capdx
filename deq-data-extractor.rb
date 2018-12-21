@@ -44,9 +44,9 @@ class DataExtractor
     #start with cas anchor row at 15
     @@data_cas_anchor[1] = 15
     @@bottom_row = '' #need to get rid of this
-    #build hash to hold row numbers and unique_row_IDs that have data in them
-    #*_rows is 2D array [[row no], unique_row_ID]
-    @@data_present = Hash["EMI", false, "EMI_rows", [[],0], "MAT", false, "MAT_rows", [[],0], "EMI_unit_key", '', "MAT_unit_key", '']
+    #build hash to hold row numbers that have data in them
+    #*_rows is array [[first_data_row no, unique_row_ID], [second_data_row, unique_row_ID], ...]
+    @@data_present = Hash["EMI", false, "EMI_rows", [], "MAT", false, "MAT_rows", [], "EMI_unit_key", '', "MAT_unit_key", '']
 
     #_______________________data processing functions____________
     def self.enumerateFiles
@@ -55,12 +55,12 @@ class DataExtractor
         file_count = 0
         file_name = ""
         files_to_check.each do |file|
-          if file_count == 50
-              break
-          elsif file_count < 39
-              file_count = file_count + 1
-              next
-          end
+          #if file_count == 215
+          #    break
+          #elsif file_count < 213
+          #    file_count = file_count + 1
+          #    next
+          #end
           fn = /\/([^\/]+)\.xlsx/.match(file)
           if fn.nil?
               @@logger.error "could not match filename"
@@ -104,9 +104,12 @@ class DataExtractor
               #need to store the data column descriptors then add descriptors to the *_desc_store
               success = setDescriptorsAndData(roo_file, sheet_key, file_name)
               if success == 1
-                puts "moving on to chem-specific data"
                 #finally, store the chem-specific data
-                #getChemSpecificData(roo_file, sheet_key, file_name)
+                #first check to see if there is any cas data @@data_cas_anchor[1] default is 15 so check [2]
+                if @@data_cas_anchor[2].nil?
+                  next
+                end
+                getChemSpecificData(roo_file, sheet_key, file_name)
               else
                 puts "setDescriptorsAndData no joy!"
               end
@@ -198,12 +201,13 @@ class DataExtractor
         end
       end#close (1..3) loop acquisition of units
       #now get the desc and agg data in the data range, already know we have data present
-      @@data_present[sheet_key + '_rows'][0].each do |row|
+      count = 0
+      @@data_present[sheet_key + '_rows'].each do |row_array|
         #need to walk through each row from upper left hand 
         tmp_descriptor_array = []
         tmp_agg_array = []
           (1..end_col).each do |col|
-              tmp_data = roo_file.sheet(SHEET[sheet_key]).cell(row, col)
+              tmp_data = roo_file.sheet(SHEET[sheet_key]).cell(row_array[0], col)
               if tmp_data.nil?
                   tmp_data = 'NA'
               end
@@ -227,9 +231,11 @@ class DataExtractor
               @@unique_row_ID_array << @@current_row_ID
               #store this as well as the current sheet row in the row_lookup store
               @@row_lookup_store.transaction do
-                @@row_lookup_store[@@current_row_ID] = [row, sheet_key, @@co_source_no, file_name]
+                @@row_lookup_store[@@current_row_ID] = [row_array[0], sheet_key, @@co_source_no, file_name]
               end
           end
+          #add the current_row_ID to the @@data_present
+          @@data_present[sheet_key + '_rows'][count] << @@current_row_ID
           #add the sheet_key_unit_key
           tmp_descriptor_array << @@data_present["#{sheet_key}_unit_key"]
           tmp_agg_array << @@data_present["#{sheet_key}_unit_key"]
@@ -248,6 +254,7 @@ class DataExtractor
               @@material_agg_data_store[@@current_row_ID] = tmp_agg_array
             end
           end
+          count += 1
           #success
       end #close data_present each (walking through all rows)
       return 1
@@ -272,6 +279,12 @@ class DataExtractor
                     co_source_no = roo_file.sheet(SHEET["CO"]).cell(start_row + source_row_inc,2)
                     if co_source_no.is_a?(Date)
                       co_source_no = co_source_no.strftime("%m/%d/%Y")
+                    elsif co_source_no.is_a?(Integer)
+                      #22-0143 entered 220143
+                      tmp = co_source_no.to_s
+                      co_source_no = "#{tmp[0,2]}-#{tmp[2,6]}"
+                    elsif co_source_no == "" || co_source_no.nil?
+                      co_source_no = file_name[0,7]
                     end
                     m = /(\d+)[-\/](\d+)\/*(\d*)/.match(co_source_no)
                     if m[3] == "" #file should be 02-2125 but entered wrong in sheet (02/01/2125)
@@ -337,45 +350,75 @@ class DataExtractor
           #cas_code array holds code and desc, third cell used to differentiate between
           #group description col and chem with missing cas code (only a common name)
           cas_code_array = []
-          if subcount%3 == 0
-            cas_code_array[0] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count).strip
+          if @@cas_pattern == 3
+            if subcount%3 == 0
+              tmp = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count)
+              if tmp.is_a?(String)
+                tmp.strip
+              end
+              cas_code_array[0] = tmp
+              cas_code_array[1] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 1, col_count)
+              cas_code_array[2] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count)
+              case self.validate(cas_code_array)
+              when "orphan"
+                #represents a correct col without a cas but does have a chem description
+                found_CAS = false
+                #check for any data at this chem type
+                chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
+                if chem_by_type_data_array != 0
+                  setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
+                end
+                skip_inc_subcount = false
+              when "cas"
+                found_CAS = true
+                #check for any data at this chem type
+                chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
+                if chem_by_type_data_array != 0
+                  setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
+                end
+                skip_inc_subcount = false
+              else
+                #must be a chemical group desc move to next col and look again
+                skip_inc_subcount = true
+              end
+            end
+            if skip_inc_subcount == false
+              #need to reset max_col_adjust because back on track
+              max_col_adjust = 0
+              subcount = subcount + 1
+            else
+              #must skip a col somethings up but only allow 3 more adj cols
+              if max_col_adjust > 3
+                return 0
+              else
+                max_col_adjust = max_col_adjust + 1
+              end
+            end
+          else#@@cas_pattern must not be 3 but 1: pull out every column as new CAS
+            tmp = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count)
+            if tmp.is_a?(String)
+              tmp.strip
+            end
+            cas_code_array[0] = tmp
             cas_code_array[1] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 1, col_count)
             cas_code_array[2] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count)
             case self.validate(cas_code_array)
             when "orphan"
-              #represents a correct col without a cas but does have a chem description
               found_CAS = false
-              #check for any data at this chem type
               chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
               if chem_by_type_data_array != 0
                 setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
               end
-              skip_inc_subcount = false
             when "cas"
               found_CAS = true
-              #check for any data at this chem type
               chem_by_type_data_array = getChemDataByType(roo_file, sheet_key, col_count)
               if chem_by_type_data_array != 0
                 setChemSpecificData(roo_file, sheet_key, col_count, cas_code_array, chem_by_type_data_array, found_CAS)
               end
-              skip_inc_subcount = false
             else
-              #must be a chemical group desc move to next col and look again
-              skip_inc_subcount = true
+              @@logger.info "#{file_name}:#{sheet_key} col pattern was 1, cas_code_array not orphan or cas"
             end
-          end
-          if skip_inc_subcount == false
-            #need to reset max_col_adjust because back on track
-            max_col_adjust = 0
-            subcount = subcount + 1
-          else
-            #must skip a col somethings up but only allow 3 more adj cols
-            if max_col_adjust > 3
-              return 0
-            else
-              max_col_adjust = max_col_adjust + 1
-            end
-          end
+          end#close if @@cas_pattern == 3
         end#closes (0..noCols) do |col_count|
      end
 
@@ -408,22 +451,28 @@ class DataExtractor
         chem_by_type_hash["CAS"] = "NA_#{cas_code_array[1][0,15]}"
       end
       chem_by_type_hash["CAS_name"] = cas_code_array[1].strip
-      units = [cas_code_array[2]]
-      units << roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count + 1)
-      units << roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count + 2)
-      #need to pull out the juicy bits
-      unit_reg = /\((.+)\)/
-      #the MAT sheet will have unitA %Weight Pollutant all units will be in para eg. (lbs)
-      start = sheet_key == "EMI" ? 0 : 1
-      (start..2).each do |count|
-        m = unit_reg.match(units[count])
-        if !m[1].nil?
-          units[count] = m[1]
+      if @@cas_pattern == 3
+        units = [cas_code_array[2]]
+        units << roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count + 1)
+        units << roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 2, col_count + 2)
+        #need to pull out the juicy bits
+        unit_reg = /\((.+)\)/
+        #the MAT sheet will have unitA %Weight Pollutant all units will be in para eg. (lbs)
+        start = sheet_key == "EMI" ? 0 : 1
+        (start..2).each do |count|
+          m = unit_reg.match(units[count])
+          if !m[1].nil?
+            units[count] = m[1]
+          end
         end
+      else
+        units = ["% weight"]
       end
       chem_by_type_hash["Unit_A"] = units[0]
-      chem_by_type_hash["Unit_B"] = units[1]
-      chem_by_type_hash["Unit_C"] = units[2]
+      if @@cas_pattern == 3
+        chem_by_type_hash["Unit_B"] = units[1]
+        chem_by_type_hash["Unit_C"] = units[2]
+      end
       #build array to write to store
       chem_by_type_data_array.each do |data_row|
         #data_row[0] array has unitA, B, C of data, data_row[1] has unique_row_ID
@@ -434,19 +483,21 @@ class DataExtractor
         out_array << chem_by_type_hash["CAS_name"]
         out_array << chem_by_type_hash["Unit_A"]
         out_array << data_row[0][0]
-        out_array << chem_by_type_hash["Unit_B"]
-        out_array << data_row[0][1]
-        out_array << chem_by_type_hash["Unit_C"]
-        out_array << data_row[0][2]
-        #if sheet_key == "EMI"
-          #@@emission_chem_data_store.transaction do
-          #    @@emission_chem_data_store[data_row[1]] = out_array
-          #end
-        #else
-          #@@material_chem_data_store.transaction do
-          #    @@material_chem_data_store[data_row[1]] = out_array
-          #end
-        #end
+        if @@cas_pattern == 3
+          out_array << chem_by_type_hash["Unit_B"]
+          out_array << data_row[0][1]
+          out_array << chem_by_type_hash["Unit_C"]
+          out_array << data_row[0][2]
+        end
+        if sheet_key == "EMI"
+          @@emission_chem_data_store.transaction do
+              @@emission_chem_data_store[data_row[1]] = out_array
+          end
+        else
+          @@material_chem_data_store.transaction do
+              @@material_chem_data_store[data_row[1]] = out_array
+          end
+        end
       end
     end
     def self.getChemDataByType(roo_file, sheet_key, data_col)
@@ -502,7 +553,7 @@ class DataExtractor
     end
     def self.validate(cas_code_array)
       #return true when not valid
-      cas_reg = /^[\d-]+$/
+      cas_reg = /^[#\d-]+$/
       desc_reg = /EF/
       #if cas_code[0].nil? || !cas_code[0].is_a?(String) || !cas_reg.match(cas_code[0])
       if cas_code_array[0] == ""
@@ -531,7 +582,7 @@ class DataExtractor
         @@data_cas_anchor[1] = 15
         @@cas_formula = ''
         @@cas_pattern = 3
-        @@data_present = Hash["EMI", false, "EMI_rows", [[],0], "MAT", false, "MAT_rows", [[],0], "EMI_unit_key", '', "MAT_unit_key", '']
+        @@data_present = Hash["EMI", false, "EMI_rows", [], "MAT", false, "MAT_rows", [], "EMI_unit_key", '', "MAT_unit_key", '']
       else
       end
     end
@@ -708,7 +759,7 @@ class DataExtractor
             @@data_present[sheet_key] = true
             collecting_data = true
           end
-          @@data_present[sheet_key + '_rows'][0] << target_row
+          @@data_present[sheet_key + '_rows'] << [target_row]
           data_rows += 1
         end
         #just in case

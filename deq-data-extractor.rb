@@ -38,6 +38,7 @@ class DataExtractor
     
     @@co_source_no = ''
     @@current_row_ID = '' #is unique but this variable is reset every row
+    @@current_cas_col_ID = Hash["EMI", "000000", "MAT", "000000"] #holds unique ids for chem specific data in chem_data_store
     @@unique_row_ID_array = []
     @@data_cas_anchor = [] #holds upper left corner of congituous range of data cells row number
     #and the cas_row and cas_col anchors so, [data_anchor, cas_row_anchor, cas_col_anchor]
@@ -230,8 +231,9 @@ class DataExtractor
           if !@@unique_row_ID_array.include?(@@current_row_ID)
               @@unique_row_ID_array << @@current_row_ID
               #store this as well as the current sheet row in the row_lookup store
+              #make room for any chem_specific_data_IDs in the empty array
               @@row_lookup_store.transaction do
-                @@row_lookup_store[@@current_row_ID] = [row_array[0], sheet_key, @@co_source_no, file_name]
+                @@row_lookup_store[@@current_row_ID] = [row_array[0], [nil], sheet_key, @@co_source_no, file_name]
               end
           end
           #add the current_row_ID to the @@data_present
@@ -476,8 +478,8 @@ class DataExtractor
       #build array to write to store
       chem_by_type_data_array.each do |data_row|
         #data_row[0] array has unitA, B, C of data, data_row[1] has unique_row_ID
-        #add Excel col header
-        out_array = [col_heading]
+        #add unique_for_ID and Excel col header
+        out_array = [data_row[1], col_heading]
         #add CAS info
         out_array << chem_by_type_hash["CAS"]
         out_array << chem_by_type_hash["CAS_name"]
@@ -491,11 +493,37 @@ class DataExtractor
         end
         if sheet_key == "EMI"
           @@emission_chem_data_store.transaction do
-              @@emission_chem_data_store[data_row[1]] = out_array
+            store_key = @@current_cas_col_ID["EMI"]
+            next_key = (store_key.to_i + 1).to_s.rjust(6,"0")
+            @@emission_chem_data_store[store_key] = out_array
+            @@current_cas_col_ID["EMI"] = next_key
+            #update the row_lookup_store
+            @@row_lookup_store.transaction do
+              row_array = @@row_lookup_store[@@current_row_ID]
+              if row_array[1][0].nil?
+                row_array[1] = [store_key]
+              else
+                row_array[1] << store_key
+              end
+              @@row_lookup_store[@@current_row_ID] = row_array
+            end
           end
         else
           @@material_chem_data_store.transaction do
-              @@material_chem_data_store[data_row[1]] = out_array
+            store_key = @@current_cas_col_ID["MAT"]
+            next_key = (store_key.to_i + 1).to_s.rjust(6,"0")
+            @@material_chem_data_store[store_key] = out_array
+            @@current_cas_col_ID["MAT"] = next_key
+            #update the row_lookup_store
+            @@row_lookup_store.transaction do
+              row_array = @@row_lookup_store[@@current_row_ID]
+              if row_array[1][0].nil?
+                row_array[1] = [store_key]
+              else
+                row_array[1] << store_key
+              end
+              @@row_lookup_store[@@current_row_ID] = row_array
+            end
           end
         end
       end

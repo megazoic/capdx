@@ -44,7 +44,6 @@ class DataExtractor
     #and the cas_row and cas_col anchors so, [data_anchor, cas_row_anchor, cas_col_anchor]
     #start with cas anchor row at 15
     @@data_cas_anchor[1] = 15
-    @@bottom_row = '' #need to get rid of this
     #build hash to hold row numbers that have data in them
     #*_rows is array [[first_data_row no, unique_row_ID], [second_data_row, unique_row_ID], ...]
     @@data_present = Hash["EMI", false, "EMI_rows", [], "MAT", false, "MAT_rows", [], "EMI_unit_key", '', "MAT_unit_key", '']
@@ -56,9 +55,9 @@ class DataExtractor
         file_count = 0
         file_name = ""
         files_to_check.each do |file|
-          #if file_count == 215
+          #if file_count == 40
           #    break
-          #elsif file_count < 213
+          #elsif file_count < 2
           #    file_count = file_count + 1
           #    next
           #end
@@ -124,7 +123,7 @@ class DataExtractor
     def self.setDescriptorsAndData(roo_file, sheet_key, file_name)
       #need to walk through the range of rows and pull out the data descriptors, aggregate data
       tmp_units_array = []
-      #emission sheet has 3 cols of descriptors and 8 cols of aggregate data = 11 tot
+      #GENERALLY... emission sheet has 3 cols of descriptors and 8 cols of aggregate data = 11 tot
       #materials have 4 and 10 = 14 tot
       end_col = sheet_key == "EMI" ? 11 : 14
       #will separate out the descriptors from aggregate data
@@ -207,57 +206,57 @@ class DataExtractor
         #need to walk through each row from upper left hand 
         tmp_descriptor_array = []
         tmp_agg_array = []
-          (1..end_col).each do |col|
-              tmp_data = roo_file.sheet(SHEET[sheet_key]).cell(row_array[0], col)
-              if tmp_data.nil?
-                  tmp_data = 'NA'
-              end
-              if col > desc_col_end
-                #must be picking up aggregate data
-                tmp_agg_array << tmp_data
-              else
-                #picking up unit descriptor info
-                tmp_descriptor_array << tmp_data
-              end
-          end
-          #generate a unique row id (primary key for the chem_specific/agg/desc_store tables)
-          next_key =  @@unique_row_ID_array.last
-          if next_key.nil?
-            next_key = '00001'
-          else
-            next_key = next_key.strip.to_i + 1
-          end
-          @@current_row_ID = next_key.to_s.rjust(5,"0")
-          if !@@unique_row_ID_array.include?(@@current_row_ID)
-              @@unique_row_ID_array << @@current_row_ID
-              #store this as well as the current sheet row in the row_lookup store
-              #make room for any chem_specific_data_IDs in the empty array
-              @@row_lookup_store.transaction do
-                @@row_lookup_store[@@current_row_ID] = [row_array[0], [nil], sheet_key, @@co_source_no, file_name]
-              end
-          end
-          #add the current_row_ID to the @@data_present
-          @@data_present[sheet_key + '_rows'][count] << @@current_row_ID
-          #add the sheet_key_unit_key
-          tmp_descriptor_array << @@data_present["#{sheet_key}_unit_key"]
-          tmp_agg_array << @@data_present["#{sheet_key}_unit_key"]
-          if sheet_key == "EMI"
-            @@emission_desc_store.transaction do
-                @@emission_desc_store[@@current_row_ID] = tmp_descriptor_array
+        (1..end_col).each do |col|
+            tmp_data = roo_file.sheet(SHEET[sheet_key]).cell(row_array[0], col)
+            if tmp_data.nil?
+                tmp_data = 'NA'
             end
-            @@emission_agg_data_store.transaction do
-              @@emission_agg_data_store[@@current_row_ID] = tmp_agg_array
+            if col > desc_col_end
+              #must be picking up aggregate data
+              tmp_agg_array << tmp_data
+            else
+              #picking up unit descriptor info
+              tmp_descriptor_array << tmp_data
             end
-          else
-            @@material_desc_store.transaction do
-                @@material_desc_store[@@current_row_ID] = tmp_descriptor_array
+        end
+        #generate a unique row id (primary key for the chem_specific/agg/desc_store tables)
+        next_key =  @@unique_row_ID_array.last
+        if next_key.nil?
+          next_key = '00001'
+        else
+          next_key = next_key.strip.to_i + 1
+        end
+        @@current_row_ID = next_key.to_s.rjust(5,"0")
+        if !@@unique_row_ID_array.include?(@@current_row_ID)
+            @@unique_row_ID_array << @@current_row_ID
+            #store this as well as the current sheet row in the row_lookup store
+            #make room for any chem_specific_data_IDs in the empty array
+            @@row_lookup_store.transaction do
+              @@row_lookup_store[@@current_row_ID] = [row_array[0], [nil], sheet_key, @@co_source_no, file_name]
             end
-            @@material_agg_data_store.transaction do
-              @@material_agg_data_store[@@current_row_ID] = tmp_agg_array
-            end
+        end
+        #add the current_row_ID to the @@data_present
+        @@data_present[sheet_key + '_rows'][count] << @@current_row_ID
+        #add the sheet_key_unit_key
+        tmp_descriptor_array << @@data_present["#{sheet_key}_unit_key"]
+        tmp_agg_array << @@data_present["#{sheet_key}_unit_key"]
+        if sheet_key == "EMI"
+          @@emission_desc_store.transaction do
+              @@emission_desc_store[@@current_row_ID] = tmp_descriptor_array
           end
-          count += 1
-          #success
+          @@emission_agg_data_store.transaction do
+            @@emission_agg_data_store[@@current_row_ID] = tmp_agg_array
+          end
+        else
+          @@material_desc_store.transaction do
+              @@material_desc_store[@@current_row_ID] = tmp_descriptor_array
+          end
+          @@material_agg_data_store.transaction do
+            @@material_agg_data_store[@@current_row_ID] = tmp_agg_array
+          end
+        end
+        count += 1
+        #success
       end #close data_present each (walking through all rows)
       return 1
     end
@@ -356,7 +355,7 @@ class DataExtractor
             if subcount%3 == 0
               tmp = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count)
               if tmp.is_a?(String)
-                tmp.strip
+                tmp.strip!
               end
               cas_code_array[0] = tmp
               cas_code_array[1] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 1, col_count)
@@ -399,7 +398,7 @@ class DataExtractor
           else#@@cas_pattern must not be 3 but 1: pull out every column as new CAS
             tmp = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1], col_count)
             if tmp.is_a?(String)
-              tmp.strip
+              tmp.strip!
             end
             cas_code_array[0] = tmp
             cas_code_array[1] = roo_file.sheet(SHEET[sheet_key]).cell(@@data_cas_anchor[1] + 1, col_count)
@@ -478,8 +477,9 @@ class DataExtractor
       #build array to write to store
       chem_by_type_data_array.each do |data_row|
         #data_row[0] array has unitA, B, C of data, data_row[1] has unique_row_ID
+        @@current_row_ID = data_row[1]
         #add unique_for_ID and Excel col header
-        out_array = [data_row[1], col_heading]
+        out_array = [@@current_row_ID, col_heading]
         #add CAS info
         out_array << chem_by_type_hash["CAS"]
         out_array << chem_by_type_hash["CAS_name"]
@@ -498,14 +498,15 @@ class DataExtractor
             @@emission_chem_data_store[store_key] = out_array
             @@current_cas_col_ID["EMI"] = next_key
             #update the row_lookup_store
+            col_array = []
             @@row_lookup_store.transaction do
-              row_array = @@row_lookup_store[@@current_row_ID]
-              if row_array[1][0].nil?
-                row_array[1] = [store_key]
+              col_array = @@row_lookup_store[@@current_row_ID][1]
+              if col_array[0].nil?
+                col_array = [store_key]
               else
-                row_array[1] << store_key
+                col_array << store_key
               end
-              @@row_lookup_store[@@current_row_ID] = row_array
+              @@row_lookup_store[@@current_row_ID][1] = col_array
             end
           end
         else
@@ -515,14 +516,15 @@ class DataExtractor
             @@material_chem_data_store[store_key] = out_array
             @@current_cas_col_ID["MAT"] = next_key
             #update the row_lookup_store
+            col_array = []
             @@row_lookup_store.transaction do
-              row_array = @@row_lookup_store[@@current_row_ID]
-              if row_array[1][0].nil?
-                row_array[1] = [store_key]
+              col_array = @@row_lookup_store[@@current_row_ID][1]
+              if col_array[0].nil?
+                col_array = [store_key]
               else
-                row_array[1] << store_key
+                col_array << store_key
               end
-              @@row_lookup_store[@@current_row_ID] = row_array
+              @@row_lookup_store[@@current_row_ID][1] = col_array
             end
           end
         end
@@ -536,8 +538,17 @@ class DataExtractor
         #collect all of the data in the row associated with this CAS col (even if only one row)
         row_data = []
         #check to see how many columns of data are present (some files only have one, others 3)
-        (0..2).each do |col_adder|
-          cell = roo_file.sheet(SHEET[sheet_key]).cell(data_row_array[0], data_col + col_adder).to_s
+        if @@cas_pattern == 3
+          (0..2).each do |col_adder|
+            cell = roo_file.sheet(SHEET[sheet_key]).cell(data_row_array[0], data_col + col_adder).to_s.strip
+            if cell == ""
+              row_data << nil
+            else
+              row_data << cell
+            end
+          end
+        else#just pick out this one cell
+          cell = roo_file.sheet(SHEET[sheet_key]).cell(data_row_array[0], data_col).to_s.strip
           if cell == ""
             row_data << nil
           else
@@ -548,7 +559,14 @@ class DataExtractor
           #no data on this row for this CAS, move to next row
         else
           data_to_return = true
-          #add unique_row_ID
+          #convert nil to NA, add unique_row_ID
+          count = 0
+          row_data.each do |rd|
+            if rd.nil?
+              row_data[count] = 'NA'
+            end
+            count += 1
+          end
           data_out << [row_data, data_row_array[1]]
         end
       end#close @@data_present enumerator
@@ -700,6 +718,8 @@ class DataExtractor
         }
         #if we're here, we couldn't find a cas anchor cell but we did find a data anchor, ok to continue
         @@logger.info "#{@@co_source_no}:#{sheet_key} couldn't find a cas row but data row: #{@@data_cas_anchor[0]}"
+        #to be sure, clear out the cas_col_anchor
+        @@data_cas_anchor[2] = nil
         return 1
       end
     end
